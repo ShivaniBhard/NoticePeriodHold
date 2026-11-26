@@ -1,0 +1,272 @@
+
+// info payroll_run;
+base_days = payroll_run.get("base_days");
+// Get payroll month and year from the current payroll run
+payDate = payroll_run.get("pay_period_start_date");
+payrollDate = payDate.toDate("yyyy-MM-dd");
+payrollMonth = payrollDate.toString("MMMM");
+payrollYear = payrollDate.toString("yyyy");
+info "Payroll Month: " + payrollMonth;
+info "Payroll Year: " + payrollYear;
+importCSV = "Employee No,Notice Period Hold \n";
+empCTCMap = Map();
+salaryCSV = invokeurl
+[
+	url :"https://www.zohoapis.in/payroll/v1/export?entity=employee_salary_details&accept=csv&filter_by=Status.All&organization_id=" + organization.get("organization_id")
+	type :GET
+	connection:"zpayroll"
+];
+salaryCSV = salaryCSV.toList("\n");
+// Get the headers
+headers = salaryCSV.get(0).toList(",");
+// info headers;
+employee_number_index = headers.indexOf("Employee Number");
+annual_ctc_index = headers.indexOf("CTC (per annum)");
+email_index = headers.indexOf("Work Email");
+// ✅ correct column
+for each  salRow in salaryCSV.subList(1)
+{
+	values = salRow.toList(",");
+	empNo = values.get(employee_number_index);
+	empCTC = values.get(annual_ctc_index).toNumber();
+	empCTCMap.put(empNo,empCTC);
+}
+// info empCTCMap;
+employeesCSV = invokeurl
+[
+	url :"https://www.zohoapis.in/payroll/v1/export?entity=employee&accept=csv&filter_by=Status.All&organization_id=" + organization.get("organization_id")
+	type :GET
+	connection:"zpayroll"
+];
+employeesCSV = employeesCSV.toList("\n");
+// info "Shivanig";
+// info employeesCSV;
+// Get the headers
+headers = employeesCSV.get(0).toList(",");
+employee_number_index = headers.indexOf("Employee Number");
+doj_index = headers.indexOf("Date of Joining");
+emp_type_index = headers.indexOf("CF.Employment Type");
+buyout_index = headers.indexOf("CF.Buy-out Flag");
+np_start_index = headers.indexOf("CF.Notice Period Start Date");
+np_end_index = headers.indexOf("CF.Notice Period End Date");
+// ✅ ADD THIS (safe fallback also)
+email_index = headers.indexOf("Work Email");
+if(email_index == -1)
+{
+	email_index = headers.indexOf("Email");
+}
+for each  empRow in employeesCSV.subList(1)
+{
+	empRow = empRow.replaceAll("\".*?\"","###");
+	values = empRow.toList(",");
+	// 	info values;
+	// 	info empRow;
+	empEmail = "";
+	if(email_index != -1 && values.size() > email_index)
+	{
+		empEmail = values.get(email_index);
+	}
+	empNo = values.get(employee_number_index);
+	doj = "";
+	if(doj_index != -1 && values.size() > doj_index)
+	{
+		doj = values.get(doj_index);
+	}
+	np_start_date = if(values.size() > np_start_index,values.get(np_start_index),null);
+	// 	info np_start_index;
+	info np_start_date;
+	if(np_start_date != null)
+	{
+		startDate = "";
+		start_day = 0;
+		if(np_start_date != "")
+		{
+			startDate = np_start_date.toDate("dd-MM-yyyy");
+			start_day = startDate.getDay();
+		}
+		//startDate = np_start_date.toDate();
+		// 	info start_day;
+		no_of_days = base_days - start_day + 1;
+	}
+	if(no_of_days < 0)
+	{
+		no_of_days = 0;
+	}
+	np_end_date = if(values.size() > np_end_index,values.get(np_end_index),null);
+	empType = values.get(emp_type_index);
+	buyout = values.get(buyout_index);
+	// hold salary
+	if(!np_start_date.isNull() && buyout == 'false')
+	{
+		// Step 1: Get employee_id using email
+		empSearchResp = invokeurl
+		[
+			url :"https://www.zohoapis.in/payroll/v1/employees?work_email_contains=" + empEmail + "&organization_id=" + organization.get("organization_id")
+			type :GET
+			connection:"zpayroll"
+		];
+		// info "ShivaniEmp";
+		// info empSearchResp;
+		employee_id = "";
+		if(empSearchResp.get("employees") != null && empSearchResp.get("employees").size() > 0)
+		{
+			employee_id = empSearchResp.get("employees").get(0).get("employee_id");
+		}
+		// Step 2: Get Net Pay from Payroll Run
+		net_pay = 0;
+		if(employee_id != "")
+		{
+			payrunEmpResp = invokeurl
+			[
+				url :"https://www.zohoapis.in/payroll/v1/payrollruns/" + payroll_run.get("payroll_run_id") + "/employees/" + employee_id + "?organization_id=" + organization.get("organization_id")
+				type :GET
+				connection:"zpayroll"
+			];
+			// 	info "ShivaniPay";
+			// 	info payrunEmpResp;
+			if(payrunEmpResp.get("employee") != null)
+			{
+				net_pay = payrunEmpResp.get("employee").get("net_pay");
+				info "ShivaniN";
+				info net_pay;
+			}
+		}
+		// Null safety for base_days
+		if(base_days == null || base_days == 0)
+		{
+			base_days = 30;
+			// safe default OR fetch correctly
+		}
+		// Null safety for net_pay
+		if(net_pay == null)
+		{
+			net_pay = 0;
+		}
+		// Step 3: Calculate per day from net pay
+		perday = net_pay / base_days;
+		info "ShivaniD";
+		info no_of_days;
+		info "ShivaniP";
+		info perday;
+		if(empType == "Equity Partner")
+		{
+			on_hold_amount = (perday * no_of_days * 40) / 100;
+		}
+		else if(empCTC <= 1500000)
+		{
+			on_hold_amount = (perday * no_of_days * 20) / 100;
+			info on_hold_amount;
+		}
+		else if(empCTC > 1500000 && empCTC <= 3000000)
+		{
+			on_hold_amount = (perday * no_of_days * 30) / 100;
+		}
+		else if(empCTC > 3000000)
+		{
+			on_hold_amount = (perday * no_of_days * 50) / 100;
+		}
+		// ✅ CRM PART (MOVED INSIDE LOOP)
+		if(on_hold_amount != null && on_hold_amount > 0)
+		{
+			if(empEmail != "")
+			{
+				crmResp = zoho.crm.searchRecords("FCC_Employee","(Email:equals:" + empEmail + ")");
+				info "Searching CRM for: " + empEmail;
+				if(crmResp != null && crmResp.size() > 0)
+				{
+					fccEmpId = crmResp.get(0).get("id");
+					holdMap = Map();
+					holdMap.put("Name","Hold Salary");
+					holdMap.put("Hold_Salary_Amount",on_hold_amount);
+					holdMap.put("Employee",fccEmpId);
+					holdMap.put("Year",payrollYear);
+					holdMap.put("Month",payrollMonth);
+					createResp = zoho.crm.createRecord("Hold_Salary_Amount",holdMap);
+					info createResp;
+				}
+				else
+				{
+					info "Employee not found in CRM: " + empEmail;
+				}
+			}
+		}
+		importCSV = importCSV + empNo + "," + on_hold_amount + "\n";
+	}
+}
+info "Shivani" + empEmail;
+// if(empEmail != "")
+// {
+// 	crmResp = zoho.crm.searchRecords("FCC_Employee","(Email:equals:" + empEmail + ")");
+// 	info "Searching CRM for: " + empEmail;
+// 	if(crmResp != null && crmResp.size() > 0)
+// 	{
+// 		fccEmpId = crmResp.get(0).get("id");
+// 		// CREATE HOLD SALARY RECORD
+// 		holdMap = Map();
+// 		holdMap.put("Name","Hold Salary");
+// 		holdMap.put("Hold_Salary_Amount",on_hold_amount);
+// 		holdMap.put("Employee",fccEmpId);
+// 		createResp = zoho.crm.createRecord("Hold_Salary_Amount",holdMap);
+// 		info createResp;
+// 	}
+// 	else
+// 	{
+// 		info "Employee not found in CRM: " + empEmail;
+// 	}
+// }
+info importCSV;
+payload = Map();
+payload.put("importfile",importCSV.tofile("sample.csv"));
+payload.put("entity","payrun_input");
+payload.put("delimiter",",");
+payload.put("charencoding","UTF-8");
+upload = invokeurl
+[
+	url :"https://www.zohoapis.in/payroll/v1/import/uploadfile?organization_id=" + organization.get("organization_id")
+	type :POST
+	parameters:payload
+	connection:"zpayroll"
+	content-type:"multipart/form-data"
+];
+payloadForFieldMapping = Map();
+info upload.get("data").isNull();
+if(upload.get("data").isNull())
+{
+	resultMap = Map();
+	resultMap.put("message","None of the employees has Notice Period Hold amount to be added");
+	resultMap.put("code",0);
+	return resultMap;
+}
+else
+{
+	payloadForFieldMapping.put("csv_columns",upload.get("data").get("csv_columns"));
+	mapping = {{"csv_column":"Employee No","entity_column":"Employee No"},{"csv_column":"Notice Period Hold","entity_column":"Notice Period Hold"}};
+	payloadForFieldMapping.put("entity_columns",mapping);
+	payloadForFieldMapping.put("import_id",upload.get("data").get("import_id"));
+	payloadForFieldMapping.put("savecurrentmapping",false);
+	sendFieldMapping = invokeurl
+	[
+		url :"https://www.zohoapis.in/payroll/v1/import/" + upload.get("data").get("import_id") + "/preview?payroll_run_id=" + payroll_run.get("payroll_run_id") + "&organization_id=" + organization.get("organization_id")
+		type :PUT
+		parameters:payloadForFieldMapping.toString()
+		connection:"zpayroll"
+	];
+	info sendFieldMapping;
+	// info sendFieldMapping;
+	//CONFIRM UPLOAD
+	confirmUploadParameters = Map();
+	confirmUploadParameters.put("import_id",upload.get("data").get("import_id"));
+	confirmUpload = invokeurl
+	[
+		url :"https://www.zohoapis.in/payroll/v1/import/" + upload.get("data").get("import_id") + "?payroll_run_id=" + payroll_run.get("payroll_run_id") + "&organization_id=" + organization.get("organization_id")
+		type :PUT
+		connection:"zpayroll"
+	];
+	//This is a sample function. It will display the payrun paydate.
+	payDate = payroll_run.get("pay_date");
+	resultMap = Map();
+	resultMap.put("message","Deductions has been applied");
+	resultMap.put("code",0);
+	// 0 - Success ; Other than 0 will be considered as failure
+	return resultMap;
+}
